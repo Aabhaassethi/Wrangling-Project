@@ -1,0 +1,811 @@
+---
+title: "Caro Loading Analysis - Final Submission"
+author: "Aabhaas Sethi"
+date: "December 7, 2018"
+output: html_document
+---
+
+## Carbo Loading Analysis{.tabset .tabset-fade}
+
+### Introduction 
+
+####What are we trying to do?
+
+We are looking at the carbo-loading transactions over a period of two years from four categories- Pasta, Pasta Sauce, Syrup, and Pancake Mix. 
+
+We want to know: 
+
+1.	Are complementary products bought together? If yes, which ones? Are there any specific brands that are bought together?
+
+2.  Are commodity sales (units) impacted when they are featured in weekly mailer?   
+
+####How to go about this? 
+
+1.	I will primarily be performing basket analysis by observing items bought in the same basket.  For this we will use transactions and product-lookup data. Then we will group data by baskets and concatenate the brands in the same row. 
+
+2.	I will slice the data at commodity, week and store level. Then we will perform a hypothesis test to check if the unit sales of a commodity are impacted when they are featured in mailer.
+
+####How will this be useful?
+
+1.	By identifying relationships among commodities, the retailer can focus on brands that are often bought together. Brands can be appropriately placed in stores to lure customers to buy combos. Further, the 'good combinations' can be promoted among customers who might have stopped purchasing the commodities after buying some 'bad combinations' of those commodities.  
+
+2.	Weekly mailer analysis will help us in determining the usefulness of the mailer in promoting sales. If there is no significant impact, then the marketing budget may be used somewhere else. Additionally, the analysis will help us determine if the impact of mailer is same or different for different commodities. 
+
+
+
+### Packages Required
+
+```{r libraries, echo = TRUE, message = FALSE, warning = FALSE}
+library(tidyverse)  #to visualize, transform, input, tidy and join data
+library(haven)      #to input data from SAS
+library(dplyr)      #data wrangling
+library(stringr)    #string related functions
+library(kableExtra) #to create HTML Table
+library(DT)         #to preview the data sets
+library(tibble)     #to better preview tibbles
+library(scales)     # to clear cluttering of labels in plots
+```
+
+### Data Preparation {.tabset .tabset-fade .tabset-pills}
+
+
+####  Data source 
+
+We obtained the **carbo-loading** household level data, obtained through the loyalty card program of a leading US grocer. It contains four data-sets, and was obtained from [here](http://uc-r.github.io/data_wrangling/final-project). Please see the code book at the same location.     
+
+a. ***transactions*** : household level data over a period of two years from four categories: Pasta, Pasta Sauce, Syrup, and Pancake Mix. 
+
+```{r transactions, echo = FALSE, message = FALSE, warning = FALSE}
+text_tbl <- data.frame (
+  Variable = c("upc", "dollar_sales", "units","time_of_transaction","geography", "week","household","store","basket","day","coupon"),
+  Description = c(
+    "Standard 10 digit UPC. ",
+    "Amount of dollars spent by the consumer ", 
+    "Number of products purchased by the consumer ",
+    "The time of transaction(military time) ",
+    "Distinguishes between two large geographical regions, possibly values are 1 or 2 ",
+    "Week of the transaction, values are from 1 to 104 ",
+    "Unique households ",
+    "Unique stores ",
+    "Unique baskets/trips to store ",
+    "day of the transaction, possible values are from 1 to 728 ",
+    "Indicates coupon usage, 1 if used, 0 otherwise "
+  )
+)
+
+kable(text_tbl) %>%
+  kable_styling(full_width = F) %>%
+  column_spec(1, bold = T, border_right = T) %>%
+  column_spec(2, width = "30em")
+```
+
+
+
+ b. ***product lookup*** : detailed product information
+    
+```{r product_lookup, echo = FALSE, message = FALSE, warning = FALSE}
+text_tbl <- data.frame (
+  Variable = c("upc", "product_description", "commodity","brand","product_size"),
+  Description = c(
+    "Standard 10 digit UPC. ",
+    "Description of product ", 
+    "specifies the four product categories under consideration ",
+    "Specific brand of item ",
+    "Specifies package size of product "
+  )
+)
+
+kable(text_tbl) %>%
+  kable_styling(full_width = F) %>%
+  column_spec(1, bold = T, border_right = T) %>%
+  column_spec(2, width = "30em")
+```    
+   
+c. ***causal lookup*** : trade activity for each product/week
+    
+```{r causal_lookup ,echo = FALSE, message = FALSE, warning = FALSE}
+text_tbl <- data.frame (
+  Variable = c("upc", "store", "week","feature_desc","display_desc", "geography"),
+  Description = c(
+    "Standard 10 digit UPC. ",
+    "Identifies unique store ", 
+    "Week of transaction, possible values are 1 through 104 ",
+    "Describes product location on weekly mailer ",
+    "Describes temporary in-store display ",
+    "Distinguishes between two large geographical regions, possible values are 1 or 2 "
+  )
+)
+
+kable(text_tbl) %>%
+  kable_styling(full_width = F) %>%
+  column_spec(1, bold = T, border_right = T) %>%
+  column_spec(2, width = "30em")
+```    
+    
+d. ***store lookup*** : store and it's zip code
+    
+```{r store_lookup ,echo = FALSE, message = FALSE, warning = FALSE}
+text_tbl <- data.frame (
+  Variable = c("store", "store_zip_code"),
+  Features = c(
+    "Identifies unique stores ",
+    "5 digit zip code "
+  )
+)
+
+kable(text_tbl) %>%
+  kable_styling(full_width = F) %>%
+  column_spec(1, bold = T, border_right = T) %>%
+  column_spec(2, width = "30em")
+```    
+    
+    
+We load the four datasets-     
+
+```{r dataload, message = FALSE, warning = FALSE}
+# Import data files
+data.file_name <- c("causal_lookup", "product_lookup", "store_lookup","transactions")
+df_name <- c("causal_lookup", "prd_lookup", "store_lookup","transactions")
+
+# looping the loading process
+for(i in seq_along(data.file_name))
+{
+  df = read_sas(paste0("data/",data.file_name[i], ".sas7bdat")) 
+  assign(df_name[i], df)
+}
+```
+
+
+####  Data cleaning
+
+   a. UPC is 10 digit in length, so to keep it consistent across the four datasets, we padded *UPC* in the **product lookup** dataset, which originally had UPC of length 9 and 10
+   
+```{r upclength, message = FALSE, warning = FALSE,collapse = TRUE}
+unique(nchar(x = prd_lookup$upc))
+```
+   
+   
+```{r paddingUPC, message = FALSE, warning = FALSE,collapse = TRUE}
+prd_lookup_crtd <- prd_lookup
+prd_lookup_crtd$upc <-  str_pad(prd_lookup$upc, 10, side = "left", pad = '0')
+```
+   
+   b. quantiles on the *dollar_sales* column to check for any absurdity in the data. 
+   
+   
+```{r salescheck ,message = FALSE, warning = FALSE,collapse = TRUE}
+quantile(transactions$dollar_sales,
+         probs = seq(0, 1, 0.01))
+```
+
+It seems like few data points are inconsistent with the other. So, we were interested in knowing if the data is actually skewed, so we ran the quantile function on units as well.
+   
+```{r unitscheck, message = FALSE, warning = FALSE,collapse = TRUE}
+quantile(transactions$units,
+         probs = seq(0, 1, 0.01))
+```
+ 
+We observe the same in units too. 
+  
+Finally we looked at the transactions - 
+
+
+```{r transactionscheck ,message=FALSE, warning=FALSE}
+transactions  %>%
+   filter( units > 100) %>% left_join(prd_lookup_crtd, by = "upc")
+```
+
+   Since there are exactly **three** entries which tell us that more than 100 units of pasta sauce(mapped with the **prd_lookup_crtd** table to get the *commodity name*) were bought by the households at one time, which is not expected. There might be an issue with the data entry here, so we plan to drop these rows for our further analysis purpose. 
+   
+   
+   c. special characters and different measurement units being used in the *product size* column in the **product lookup** dataset. However, we aren't using it for our analysis. 
+   
+  
+####Cleaned Datasets
+
+1. After identifying the absurd data point, we remove its entry from the transactions. We also created a copy of the file to keep the original data as it is.
+
+```{r cleaned_data, message = FALSE, warning = FALSE,  collapse = TRUE}
+#identifying the data index
+which(transactions$units > 100)
+
+#cross-validating data at the index
+transactions[c(3127414,3522595,4020790),]
+
+#deleting the row and creating another table so as to not mess with the original
+transactions_crtd <- transactions[-c(3127414,3522595,4020790),]
+```
+
+Hence, the identified issues were fixed and thus the tables are ready to be used for further analysis. 
+
+
+*Please note: Instead of creating a master dataset with more than 15 columns, we plan to slice and dice and apply joins in the required data levels.*
+
+#### Summary
+
+ 1. A brief of the *transactions* data which will be majorly used for the entire analysis. 
+```{r transaction_view, echo = FALSE, message = FALSE, warning = FALSE}
+
+transactions_crtd_head <- head(transactions_crtd, n = 20)
+datatable(transactions_crtd_head, caption = "Table 1: Tidy Data Set")
+```
+
+2. The unique number of UPCs that we will primarily use to join our tables: `r length(unique(prd_lookup_crtd$upc))` 
+
+3. All these UPCs are identified in the product_lookup table, so we can fetch the product, brand information
+```{r match, message = FALSE, warning = FALSE}
+transactions_crtd  %>% anti_join(prd_lookup_crtd , by = "upc")
+```
+
+4. The different features avaiable in the data and are of interest- `r unique(causal_lookup$feature_desc)`
+
+
+5. The sales and units by feature_desc- 
+```{r feature, echo = FALSE, message = FALSE, warning = FALSE}
+trans_cut <- transactions %>% group_by(upc, week,store, geography) %>% summarize( tot_sales = sum(dollar_sales), tot_unit = sum(units)) 
+
+causal_prd_lookup <- causal_lookup %>% 
+  left_join(prd_lookup_crtd, by = "upc")
+
+trans_cut  %>% inner_join(causal_prd_lookup, by = c("upc","week","store","geography") ) %>%
+  select(upc, week,store, geography, commodity, display_desc, feature_desc, tot_sales,tot_unit) %>% 
+  group_by(feature_desc) %>%
+  summarise( total_sales = sum(tot_sales), total_units = sum(tot_unit)) %>%
+  arrange(desc(total_sales),desc(total_units))
+```
+
+
+
+### Exploratory Data Analysis {.tabset .tabset-fade .tabset-pills}
+
+####  Complementary Category Analysis 
+
+
+**Objective:** 
+
+* The objective is to check if there is any relationship among the given commodities: pasta, pasta sauce, syrups, and pancake mixes   
+
+* If a relationship exists between commodities then the top brands of the commodities that are most commonly bought together would be identified
+
+
+We have the following commodties:  
+
+```{r commodities,  message = FALSE, warning = FALSE}
+# Commodities
+categories <- c("pasta","pasta sauce","pancake mixes","syrups")
+
+# Declaring a matrix that will contain complimentary category data
+basket_analysis_table <- matrix(NA,nrow=length(categories),
+                                ncol=length(categories),byrow=T)
+
+```
+
+<br> </br>
+
+**Tidying Data**:
+
+* To attain the objective, the data frames: transactions and prd_lookup_crtd, would be joined. This would help in determining the commodity name of a upc.
+
+* A loop would be used to filter a combination of 2 commodities at a time from the above defined categories. Then the data would be grouped by baskets to count the number of different commodites in a basket. 
+
+*Notes*:
+
+1. My focus has been to identify if 2 commodities were prominently bought by customers on the same day in the same basket. 
+2. I have considered 2 way combinations for my analysis. I have checked if ith and jth commodities were bought in the same basket or not.   
+
+<br> </br>
+
+Code for tidying data and checking the relationship between commodity sales (units):
+```{r compl_category_data,  message = FALSE, warning = FALSE}
+
+# Selecting upc's that were sold. Returned items have been excluded.
+transactions1 <- transactions %>% 
+  filter(dollar_sales>0)
+
+#The loop will pick all combinations of commodities and populate the basket_analysis_table matrix
+for (i in seq_along(categories))
+{ 
+  for(j in (1:length(categories)))
+  {
+    #Joining transactions1 and prd_lookup_crtd tables 
+    # and chosing baskets that had ith and/or jth commodities in them
+    filtered_data1 <- transactions1 %>% 
+                      left_join(prd_lookup_crtd, by="upc") %>% 
+                        filter((commodity %in% c(categories[i],categories[j])))  
+    
+    # Grouping baskets to check if they had only one of the ith or jth commodity or both of them
+      cat1.cat2 <-  filtered_data1 %>% 
+      select(basket,commodity) %>% 
+      group_by(basket) %>% 
+      summarize(n_commodities=n_distinct(commodity))
+    
+    # 1 would mean that either ith or jth commodity was in the basket but not
+    # both. 2 would mean that the basket contained both of the commodities. Note
+    # that there might be other commodities in the basket as well. But we are
+    # only interested in checking for ith and jth categories.
+    
+
+    # When i = j, that would mean we are simply counting the total baskets
+    # in which the ith commodity was present. i != j would focus on counting 
+    # complimentary sales (units) of ith commodity with jth commodity.
+    if(i==j){
+      basket_analysis_table[i,j] <- table(cat1.cat2$n_commodities)[1]
+    }
+    else{
+      basket_analysis_table[i,j] <- table(cat1.cat2$n_commodities)[2]
+    }
+  }
+}
+# Adding col names and row names to matrix 
+colnames(basket_analysis_table) <- categories
+rownames(basket_analysis_table) <- categories
+
+# Displaying the results
+basket_analysis_table
+```
+Well Well! We can see something is there in the above table that requires our attention.
+But isn't it  difficult to read such large numbers in the matrix?  Let us take a look 
+at the plots that will help us in checking relationships between commodities. 
+ 
+Note: There can be other commodities as well in the basket when flter for the 
+ith and jth commodities. However, that does not impact our analysis because we are
+checking relationship between only **2** commodites at a time
+
+<br> </br>
+
+Code for plotting data in basket_analysis_table:
+```{r compl_commodity_plot,  message = FALSE, warning = FALSE}
+
+# Converting the matrix to a data frame
+rownames(basket_analysis_table) <- NULL
+bask_anl_df <- as.data.frame(basket_analysis_table)
+
+# Adding categories to the df
+bask_anl_df <- add_column(bask_anl_df, category1 = categories , .before = 1)
+
+# Tidying data for plot
+basket_anl_plot_tdf <- bask_anl_df %>% 
+  gather(category2, values,-category1) %>%
+  arrange(category1)
+
+# Shortening name of pancake mixes to pcake mixes and converting chr columns to factors
+basket_anl_plot_tdf$category1 <- str_replace(basket_anl_plot_tdf$category1,
+                                             "pancake mixes", "pcake mixes")
+basket_anl_plot_tdf$category2 <- str_replace(basket_anl_plot_tdf$category2, 
+                                             "pancake mixes", "pcake mixes")
+basket_anl_plot_tdf$category1 <- as.factor(basket_anl_plot_tdf$category1)
+basket_anl_plot_tdf$category2 <- as.factor(basket_anl_plot_tdf$category2)
+
+# Plot
+
+# For making x labels to fit in 2 lines to avoid cluttering
+levels(basket_anl_plot_tdf$category2) <- gsub(" ", "\n",
+                                              levels(basket_anl_plot_tdf$category2))
+
+# Creating a plot for different comodity combinations 
+
+plot1 <- basket_anl_plot_tdf %>% ggplot(aes(x=category2, y=values)) + 
+  geom_bar(position= "dodge",stat="identity",fill = "#FF6666")  + 
+  facet_grid(. ~ category1) +
+  ggtitle("Basket Analysis - Commodity Combinations", subtitle = 
+"Number of baskets containing any 2 product Commodity purchased at the same time") + 
+  xlab("Commodity") +
+  ylab("Number of Baskets")
+
+plot1 
+```
+
+<br>**Results:**</br>
+
+* For each commodity (written at top of plot), we can how many baskets contained the given commodity and the remaining commodity.
+
+* For example, there were 1958161 baskets of pasta sold in the given time period. Out of those baskets:\
+
+      + 818343 baskets had atleast 1 brand of pasta sauce along with pasta
+      + 49887 baskets had atleast 1 brand of pancake mixes along with pasta
+      + 109502 baskets had atleast 1 brand of syrups along with pasta
+
+<br>**Analysis:**</br>
+
+* There is a clear relationship between the sales of pasta and pasta sauce. We will explore what brands of pasta and pasta sauce are most commonly bought by households.
+
+
+<br>**Tidying Data**:</br>
+
+* Starting from the transactions1 data frame, the baskets containing pasta or pasta sauce would be filtered
+* Then the distinct brands of pasta and pasta sauce would be concatenated in the same row corresponding to a basket.
+* The data would be grouped by brand combinations to get the count of top brand combinations.
+
+```{r Tidying_Data_Brand_Analysis,  message = FALSE, warning = FALSE}
+# We will only consider baskets in which both pasta and pasta sauce (atleast) were present
+
+filtered_data1 <- transactions1 %>% 
+  left_join(prd_lookup_crtd, by="upc") %>% 
+  filter((commodity %in% c("pasta","pasta sauce")))  
+
+# Grouping baskets to check the number of different commodities in them out of ith and jth commodities, ie, 1 or 2
+
+pasta_pasta.sauce <-  filtered_data1 %>% 
+  select(basket,commodity) %>% 
+  group_by(basket) %>% 
+  summarize(n_commodities=n_distinct(commodity))
+
+rel_baskets_p.ps <- pasta_pasta.sauce %>% 
+  filter(n_commodities==2) %>% 
+  select(basket)
+
+# The following code arranges brands in alphabetical order for same basket and remove duplicate brands in same basket
+#Special case: when brand of p and ps is same, those baskets will only occur once and are extracted later in the code
+
+brands <- filtered_data1 %>%  
+  filter(basket  %in% rel_baskets_p.ps$basket) %>% 
+  arrange(basket,brand) %>% 
+  select(basket, brand) %>% 
+  distinct()
+
+# Concatenating brands in the same basket in different rows to same row and removing resulting duplicates
+
+brands_concat <- brands %>%  
+  group_by(basket) %>%
+  mutate(count=n()) %>% 
+  mutate(combo = paste0(brand, collapse = ","))  %>% 
+  select(-brand) %>% 
+  distinct()
+
+brands_concat
+
+# Gives count of different brands in a basket
+num_brands_per_bask <- table(brands_concat$count)
+
+num_brands_per_bask
+
+# basket plot 
+brands_concat %>% select(-combo) %>% 
+  ggplot(aes(x=as.factor(count))) + 
+  geom_bar(fill = "#FF6666") +
+  ggtitle("Count of Unique Brands in Basket -  Pasta and Pasta Sauce") + 
+  xlab("Different Brands in Basket") + 
+  ylab("Number of baskets")  + 
+  scale_y_continuous(limits=c(0, 800000),labels = comma) 
+```
+
+<br>**Analysis**</br>
+The above plot displays the distinct number of brands (atleast one each of both pasta and pasta sauce) in a basket. But then what does one mean in the x axis? \n
+It would mean that both the brands of pasta and pasta sauce were same. Simmilarly, two would mean that 
+both brands were different. 3 would mean that we had one brand of pasta, one brand of 
+pasta sauce, and one brand either of p or ps and  all 3 are different and so on. \n
+
+\n
+There are 818,343 baskets containing pasta and pasta sauce. Out of these these baskets:
+
+* A significant number of the baskets had exactly 2 brands (**661549 baskets**): one of each of the commodities.
+* There are households that prefer to buy the same brand of both pasta and pasta sauce (**71115 baskets**)
+* And there are some households who seem to like to experiment with brands. These people bought ateast 2 different brands of a commodity along with 1 brand of the other commodity (**75730 baskets**). Would'nt it be interesting to explore the buying habbits of this experimental lot? Some other time maybe...We still need to identify top brands first! 
+
+\n Here we go!!! The following code identifies the top brand combinations for pasta and pasta sauce: 
+
+```{r Brand_Analysis,  message = FALSE, warning = FALSE}
+
+#We would look only till upto combinations of 2 brands of pasta and pasta sauce in a basket
+
+# Case1: When same brand of p and psauce present in the basket
+same_p_ps_brand <- brands_concat %>% 
+  filter(count==1 ) 
+
+table(same_p_ps_brand$combo)
+# 62325 cases exist where we had Private label brand of p and psauce in a basket
+
+# Case2: When 2 different brands( one of p and one of psauce) were present in the basket
+
+brands_concat_c2 <- brands_concat %>%  
+  filter(count==2) %>%  
+  select(-count) %>% 
+  group_by(combo) %>% 
+  summarise(freq=n()) %>% 
+  arrange(desc(freq))
+
+head(brands_concat_c2,10)
+
+# Top brands plot
+# This plot gives the number of baskets that had atleast 1 brand
+# of pasta and 1 brand of pasta sauce
+
+single_brand <- data.frame(combo="Private Label,Private Label",freq=62325)
+top_brand_comb <- rbind(head(brands_concat_c2,4),single_brand)
+top_brand_comb1 <-  top_brand_comb %>%  arrange(desc(freq))
+
+options(scipen=5000)
+top_brand_comb1 %>%  ggplot(aes(x=reorder(combo,freq),y=freq)) + 
+                 geom_bar(position= "dodge",stat="identity",fill = "#FF6666") + 
+                          coord_flip() +
+ggtitle("Top Brand Combinations - Pasta and Pasta Sauce", subtitle = 
+"Number of baskets containing given brand combination of pasta and pasta sauce") + 
+xlab("Brand Combination") + ylab("Number of baskets")  + 
+scale_y_continuous(limits=c(0, 150000),labels = comma) 
+```
+
+<br>**Results:**</br>
+
+* Top brand combinations (pasta, pasta sauce) are as follows:
+    + Private Label, Ragu
+    + Private Label, Prego
+    + Private Label, Private Label
+    + Private Label, Hunt's
+    + Mueller, Ragu
+
+\n
+Private Label Brand dominates the pasta segment. However, there are a wide variety of pasta sauces, which are bought together with private label pasta. Private Label, Ragu combination clearly dominates  the other combos present in the stores!
+\n
+\n
+So, does the retailer promote such combinations to its customers? We don't know. 
+\n We do know that the retailer does send out weekly mailers for promotions. If we can somehow confirm that those mailers do have an impact on increase in sales of an individula commodity, would'nt it be beneficial to promote the above combinations together in those mailers? People already like them, which means that these combination do well with each other. So, if other people who have not tried these combinations are prompted to buy these combinations, then we just might see some new happy customers! 
+
+####  Weekly Mailer Impact Analysis
+
+**Objective:** The objective of this analysis is to check if the sales (number of units) of a commodity are impacted  when the product is featured in the mailer for different stores. We will perform a paired t-test for checking the validity of the above objective. 
+
+
+**Tidying Data**: To perform hypothesis test, data in the transactions1 data frame would be needed to be tidied.
+
+* 4 tests will be performed for each of the given commodities: Patsa, Pasta Sauce, Syrups, and Pancake Mixes
+
+* 2 groups would be created - Featured and Not Featured, indicating whether a specific commodity was featured in the mailer for a particular week for a particular store. 
+
+* If a commodity featured in mailer, irrespective of its placement in the mailer, it will be grouped in the Featured category for that week for that store
+
+* The data would be grouped by stores to calculate mean weekly sales (units) when the commodities featured  in the mailer and when they did not for all 4 commodities one by one
+
+* The difference in the mean weekly sales will be calculted for all stores for a commodity and checked if it follows Normal Distribution
+
+* Paired t-test will be applied on difference of mean weekly sales (units) for featured and not featured categories with the following hypothesis:
+
+
+**Hypothesis to be checked**
+
+##### **Ho:** There is no difference in mean weekly sales (units) of a particular commodity when it featured in weekly mailer and when it did not. 
+
+##### **H1:** There is a difference in mean weekly sales (units) of a particular commodity when it featured in weekly mailer and when it did not. 
+
+<br> </br>
+
+We start with creating vectors that to capture the output of the hypothesis data:
+
+```{r vectors_for_ttest,  message = FALSE, warning = FALSE}
+# Creating vectors that will contain the output of for the Hypothesis Testing
+p_val <- rep(NA,length(categories))
+estimate <- rep(NA,length(categories))
+conf_inter.upper <- rep(NA,length(categories))
+conf_inter.lower <- rep(NA,length(categories))
+
+```
+<br> </br>
+**Filtering data**:
+
+```{r data_beginning,  message = FALSE, warning = FALSE}
+
+# Selecting data for week>43 as data is NA for causal_lookup for weeks <43
+table_join <- transactions1 %>% 
+                  filter(week>=43) %>% 
+                    select(upc,units,week,store) %>% 
+                      left_join(prd_lookup_crtd, by=c("upc")) %>% 
+                          select(upc,units,week,store,commodity)
+
+head(table_join)
+```
+
+<br> </br>
+Our data is in the above format after joining and keeping selected columns. Since we would have to tidy data for each commodity, a function has been created to avoid repititiveness in code. Tidieid data is returned by this function.
+
+```{r tidying_data,  message = FALSE, warning = FALSE}
+tidy_data <- function(x) {
+  
+filterd_table_comm_i <- table_join %>% 
+              filter(commodity == x) %>% 
+              inner_join(causal_lookup,by=c("upc","week","store")) %>%
+              select(units,week,store, feature_desc) %>%  
+              mutate(mailer=ifelse(feature_desc=="Not on Feature", 
+              "Not Featured","Featured")) %>% 
+              select(-feature_desc)
+
+# Separating data when commodity was featured and when it was not featured in mailer
+table_featured <- filterd_table_comm_i %>%
+                  filter(mailer=="Featured") 
+
+table_not_featured <- filterd_table_comm_i %>%
+                  filter(mailer=="Not Featured")
+
+# Getting weekly mean sales (units) by store for featured items 
+table_feature_sum <- table_featured %>% 
+                     select(-mailer) %>% 
+                     group_by(store,week) %>% 
+                     summarise(sum_fsales=sum(units)) %>% 
+                     select(-week) %>% 
+                     group_by(store) %>% 
+                     summarise(mean_weekly_fsales=mean(sum_fsales))
+
+# Getting weekly mean sales (units) by store for non_featured items 
+table_non_feature_sum <-table_not_featured %>% 
+  select(-mailer) %>% 
+  group_by(store,week) %>% 
+  summarise(sum_nfsales=sum(units)) %>% 
+  select(-week) %>% 
+  group_by(store) %>% 
+  summarise(mean_weekly_nfsales=mean(sum_nfsales))
+
+# Joining tables for hypothesis testing
+table_f_n.f <-  table_feature_sum %>% inner_join(table_non_feature_sum, by=c("store"))
+
+# Calculating difference between mean weekly sales for different stores 
+# when the product featured in mailer and when it did not.
+table_f_n.f1 <- table_f_n.f %>% mutate(diff=mean_weekly_fsales-mean_weekly_nfsales)
+
+# Returning data
+return(table_f_n.f1)
+}
+```
+
+<br> </br>
+The following function has been created to perform paired t-test on tidied data for each commodity:
+```{r t_test, echo=TRUE, message = FALSE, warning = FALSE}
+
+# Function for Paired t Test
+paired.t.test <- function(y,z){
+  t.test(y, z, 
+         paired=TRUE, 
+         conf.level=0.95)
+} 
+```
+
+<br> </br>
+The following loop will push each commodity into the function which will return the tidied data. Upon running the loop, we will get 4 histograms. Paired t-test can only be applied if the distribution of the difference in mean weekly sales for featured and not featured groups is approximately Normal.
+```{r looping_commodity,  message = FALSE, warning = FALSE}
+
+
+# categories <- c("pasta","pasta sauce", "pancake mixes","syrups") ...for reference
+# For loop will apply paired t-test to all commodities in categories vector
+par(mfrow=c(2,2))
+for (i in seq_along(categories)){
+  final_table <- tidy_data(categories[i])
+  
+  # Checking for normality of the mean weekly difference before hypothesis test
+  title <-paste("Normality check for", categories[i])
+  
+  # Plotting the distribution for difference
+  norm_plot_check <- hist(final_table$diff, main=title,
+       xlab= "Difference in weekly mean unit sales",
+       col= "darkmagenta")
+  norm_plot_check
+ 
+  # Sending the tidied data to the function paired.t.test ans storing the result 
+  output <-  paired.t.test(final_table$mean_weekly_fsales,final_table$mean_weekly_nfsales)
+  p_val[i] <- output$p.value
+  estimate[i] <- output$estimate
+  conf_inter.lower[i] <- output$conf.int[1]
+  conf_inter.upper[i] <- output$conf.int[2]
+}
+```
+
+The histograms seem fine.
+
+<br>Tidied data is as follows: </br>
+*The following data is for commodity: `r categories[i]` . It is in same format for all other commodities as well.* 
+<br> </br>
+
+
+```{r Display_tidy_data, echo=FALSE, message = FALSE, warning = FALSE}
+
+datatable(final_table, caption = "Table: Tidied Data") %>%  formatRound(2:4,digits=3)
+
+```
+
+<br> </br>
+t-test performed using the following function:
+
+```{r t-test, eval=FALSE, message = FALSE, warning = FALSE}
+
+paired.t.test <- function(y,z){
+  t.test(y, z, paired=TRUE, conf.level=0.95)
+} 
+```
+
+<br>**Results:** </br>
+
+```{r result, echo=FALSE, message = FALSE, warning = FALSE}
+
+results <- data.frame(categories, p_val, estimate,conf_inter.lower,conf_inter.upper)
+options(scipen=0)
+datatable(results, caption = "Table: Paired t-test: Inference")  %>%
+                                             formatRound(3:5, digits=3)
+
+```
+
+
+<br>**Analysis:**</br>
+
+* P values for all the commodities is less than our alpha value. Hence, we have sufficient evidence to rejet the hypothesis for all the categories. Hence, we are 95% confident that the weekly mean difference of featured and not featured sales are not same. 
+
+* The estimate for difference in mean weekly sales (Featured - Not Featured) along with the confidence intervals for pasta, pasta sauce, and pancake mixes  clearly give us an indication that the sales of these commodities increased by ~6.6, 12.5, and 5.9 units respectively for each store on an average when that commodity featured in the mailer.
+
+* At the same time, even though the hypothesis is rejected for syrups, the estimate and confidence interval for syrups indicate that very little difference exists for mean weekly unit sales of syrups when it is featured in mailer compared with when it is not.
+
+**Conclusion**: Featuring commodities in weekly mailer generally tend to increase mean weekly unit sales. However, there are categories such as syrups that have almost no impact. So, it would be beneficial for the retailer to revisit all the commodities that it features in it weekly mailers. It can remove commodities such as syrups, and focus on commodities that increase mean weekly sales.
+
+### Summary
+
+**What all I did?** \n
+
+#### Complimentary Category Analysis
+
+1.  Joined transactions and product lookup tables. Filtered data for each commodity combination.
+
+2.  Grouped data by baskets and counted baskets that had the commodity combination
+   
+3.  Pursued brand analysis for commodities that showed a complimentary sales relationship
+
+4.  Filtered data for those commodities, grouped by baskets, concated brands to one row, grouped data by brands, counted brand frequency
+
+#### Weekly Mailer Impact Analysis
+
+1.  Joined transactions, product lookup, and causal_lookup tables. Filtered data for week>43 
+
+2.  Created a function to tidy data for hypothesis testing that involved creating a new variable, feature_desc to categorize whether a upc was featured or not featured in mailer for a specific week for a store
+
+3. Separated data for featured and not featured categories 
+
+4. Calculated mean weekly sales for both categories for all stores for all weeks and joined tables together
+
+5.  Performed paired t-test
+<br> </br>
+
+**Results?** \n
+
+We finally have the answers. And some interesting questions that our answers generated! That means more interesting work!!!
+<br> </br>
+**1a.	Are complementary products bought together?** \n
+
+Ans. Yes!
+
+* Two commodities stand out: Pasta and Pasta sauce.
+
+\n
+<br> </br>
+
+**1b. If yes, are there any specific brands that are bought together?** \n
+
+Ans. Yes! 
+
+
+* Top 5 brand combinations (pasta, pasta sauce) are as follows:
+
+    + Private Label, Ragu
+    + Private Label, Prego
+    + Private Label, Private Label
+    + Private Label, Hunt's
+    + Mueller, Ragu
+
+
+**2.  Are commodity sales (units) impacted when they are featured in weekly mailer?** \n
+
+Ans. Yes!
+
+* The confidence intervals gained from paired t-test revealed that mean weekly sales for pasta, pasta sauce, and pancake mixes increased by ~6.6, 12.5, and 5.9 units respectively for each store on an average when that commodity featured in the mailer.
+
+* However, unit sales of one commodity - Syrups, did not show much difference. Thus, we can conclude that the retailer should revisit all the commodities that it features in its mailer and keep only those that have a positive impact on mean sales.
+
+**Implications of the analysis to stakeholders**:
+
+* The retailers should be happy that the money it had been spending on its weekly mailers indeed helped in increasing sales! Pheww! Also, it could consider removing syrups from mailers as it does not really impact sales.
+
+* And now that we know the top brands for pasta and pasta sauce, wouldn't it be interesting to test if sales of those brands increase when placed side by side in mailer? 
+
+* It could also send promotional offers to customers to lure them to buy the top combinations. Lastly, we also noted in the Complementary Category Analysis that there a few experimental households that buy more than 2 brands of either pasta or pasta sauce. It would be interesting for the retailer to study their buying habits and send appropriate promotional offers to this lot!
+
+
+**Limitations/Scope of improvement in the analysis**
+
+1.	I only considered 2 combinations at a time. It would have been prudent to study 3 combinations of commodities as well. For example, do certain brands of pasta, pasta sauce, and syrups sell together?
+
+2.	Since we know that the mailer impacts the weekly unit sales, it is necessary to see the impact of placement of the ad in the mailer on the weekly unit sales of the commodity. Hypothesis testing could be done for the above-mentioned problem.
+
+3.	I performed the hypothesis testing for all stores together. Perhaps, classifying the stores based on sales, or geography and then performing hypothesis testing separately would have been more prudent.
+
